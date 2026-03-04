@@ -1,4 +1,4 @@
-package com.example.app
+package com.adimer.billete
 
 import io.flutter.embedding.android.FlutterActivity
 
