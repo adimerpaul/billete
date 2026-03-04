@@ -36,7 +36,7 @@ class _BilleteAppState extends State<BilleteApp> {
       builder: (context, _) {
         return MaterialApp(
           title: 'Lector de Billetes',
-          debugShowCheckedModeBanner: false,
+          // debugShowCheckedModeBanner: false,
           themeMode: _themeViewModel.themeMode,
           theme: ThemeData(
             useMaterial3: true,
