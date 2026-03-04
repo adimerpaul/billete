@@ -1,8 +1,13 @@
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui';
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
-import '../viewmodels/banknote_scanner_viewmodel.dart';
+import '../models/serial_validation_result.dart';
+import '../viewmodels/banknote_live_camera_viewmodel.dart';
 
 class BanknoteScannerView extends StatefulWidget {
   const BanknoteScannerView({super.key});
@@ -12,16 +17,130 @@ class BanknoteScannerView extends StatefulWidget {
 }
 
 class _BanknoteScannerViewState extends State<BanknoteScannerView> {
-  late final BanknoteScannerViewModel _viewModel;
+  CameraController? _cameraController;
+  Future<void>? _cameraInitFuture;
+  late final BanknoteLiveCameraViewModel _viewModel;
 
   @override
   void initState() {
     super.initState();
-    _viewModel = BanknoteScannerViewModel();
+    _viewModel = BanknoteLiveCameraViewModel();
+    _cameraInitFuture = _initializeCamera();
+  }
+
+  Future<void> _initializeCamera() async {
+    final cameras = await availableCameras();
+    if (!mounted || cameras.isEmpty) {
+      return;
+    }
+
+    final rearCamera = cameras.firstWhere(
+      (camera) => camera.lensDirection == CameraLensDirection.back,
+      orElse: () => cameras.first,
+    );
+
+    final controller = CameraController(
+      rearCamera,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: Platform.isAndroid
+          ? ImageFormatGroup.nv21
+          : ImageFormatGroup.bgra8888,
+    );
+
+    await controller.initialize();
+    _cameraController = controller;
+    await controller.startImageStream(_processCameraImage);
+    if (!mounted) {
+      await controller.dispose();
+      return;
+    }
+
+    setState(() {});
+  }
+
+  Future<void> _processCameraImage(CameraImage image) async {
+    final controller = _cameraController;
+    if (controller == null || !mounted) {
+      return;
+    }
+
+    final inputImage = _toInputImage(image, controller.description);
+    if (inputImage == null) {
+      return;
+    }
+
+    await _viewModel.processFrame(inputImage);
+  }
+
+  InputImage? _toInputImage(CameraImage image, CameraDescription camera) {
+    final rotation = InputImageRotationValue.fromRawValue(
+      camera.sensorOrientation,
+    );
+    if (rotation == null || image.planes.isEmpty) {
+      return null;
+    }
+
+    late final Uint8List bytes;
+    late final InputImageFormat format;
+    late final int bytesPerRow;
+
+    if (Platform.isAndroid) {
+      final detectedFormat = InputImageFormatValue.fromRawValue(
+        image.format.raw,
+      );
+      if (detectedFormat == InputImageFormat.nv21 && image.planes.length == 1) {
+        bytes = image.planes.first.bytes;
+        format = InputImageFormat.nv21;
+        bytesPerRow = image.planes.first.bytesPerRow;
+      } else if (detectedFormat == InputImageFormat.yuv_420_888) {
+        bytes = Uint8List.fromList([
+          for (final plane in image.planes) ...plane.bytes,
+        ]);
+        format = InputImageFormat.yuv_420_888;
+        bytesPerRow = image.planes.first.bytesPerRow;
+      } else {
+        return null;
+      }
+    } else if (Platform.isIOS) {
+      bytes = image.planes.first.bytes;
+      format = InputImageFormat.bgra8888;
+      bytesPerRow = image.planes.first.bytesPerRow;
+    } else {
+      final detectedFormat = InputImageFormatValue.fromRawValue(
+        image.format.raw,
+      );
+      if (detectedFormat == null) {
+        return null;
+      }
+      bytes = Uint8List.fromList([
+        for (final plane in image.planes) ...plane.bytes,
+      ]);
+      format = detectedFormat;
+      bytesPerRow = image.planes.first.bytesPerRow;
+    }
+
+    return InputImage.fromBytes(
+      bytes: bytes,
+      metadata: InputImageMetadata(
+        size: Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: rotation,
+        format: format,
+        bytesPerRow: bytesPerRow,
+      ),
+    );
+  }
+
+  void _goBack() {
+    Navigator.of(context).pop<SerialValidationResult?>(_viewModel.result);
   }
 
   @override
   void dispose() {
+    if (_cameraController?.value.isStreamingImages ?? false) {
+      _cameraController?.stopImageStream();
+    }
+    _cameraController?.dispose();
     _viewModel.dispose();
     super.dispose();
   }
@@ -29,19 +148,27 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Escaner de series')),
       body: AnimatedBuilder(
         animation: _viewModel,
         builder: (context, _) {
-          return ListView(
-            padding: const EdgeInsets.all(16),
+          return Stack(
             children: [
-              _buildActionCard(context),
-              const SizedBox(height: 16),
-              if (_viewModel.capturedImage != null)
-                _buildImagePreview(_viewModel.capturedImage!),
-              if (_viewModel.capturedImage != null) const SizedBox(height: 16),
-              _buildResultCard(),
+              Positioned.fill(child: _buildCameraSection()),
+              Positioned(
+                top: 48,
+                left: 16,
+                child: _GlassButton(
+                  icon: Icons.arrow_back,
+                  label: 'Atras',
+                  onPressed: _goBack,
+                ),
+              ),
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 28,
+                child: _buildStatusPanel(),
+              ),
             ],
           );
         },
@@ -49,126 +176,166 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
     );
   }
 
-  Widget _buildActionCard(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Proceso recomendado',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            const Text('1. Coloca el billete en una superficie plana.'),
-            const Text('2. Asegura buena iluminacion.'),
-            const Text('3. Captura con la serie visible (arriba o abajo).'),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: _viewModel.status == ScannerStatus.loading
-                  ? null
-                  : _viewModel.takePhotoAndScan,
-              icon: const Icon(Icons.camera_alt_outlined),
-              label: Text(
-                _viewModel.status == ScannerStatus.loading
-                    ? 'Procesando...'
-                    : 'Tomar captura',
-              ),
-            ),
-            if (_viewModel.scanResult != null) const SizedBox(height: 8),
-            if (_viewModel.scanResult != null)
-              OutlinedButton(
-                onPressed: _viewModel.clearResult,
-                child: const Text('Limpiar resultado'),
-              ),
-          ],
-        ),
-      ),
+  Widget _buildCameraSection() {
+    return FutureBuilder<void>(
+      future: _cameraInitFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done ||
+            _cameraController == null ||
+            !_cameraController!.value.isInitialized) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final frameWidth = constraints.maxWidth * 0.86;
+            final frameHeight = constraints.maxHeight * 0.22;
+            return Stack(
+              children: [
+                Positioned.fill(
+                  child: ColoredBox(
+                    color: Colors.black,
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: _cameraController!.value.aspectRatio,
+                        child: CameraPreview(_cameraController!),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned.fill(
+                  child: _CaptureOverlay(
+                    frameWidth: frameWidth,
+                    frameHeight: frameHeight,
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
-  Widget _buildImagePreview(File imageFile) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
+  Widget _buildStatusPanel() {
+    final result = _viewModel.result;
+    final status = _viewModel.status;
+
+    String title = 'Escaneando serie...';
+    Color color = Colors.blue;
+    String subtitle = 'Apunta la serie dentro del recuadro.';
+
+    if (status == LiveCameraStatus.invalid && result != null) {
+      title = 'INVALIDO';
+      color = Colors.red;
+      subtitle = '${result.serial} | ${result.message}';
+    } else if (status == LiveCameraStatus.valid && result != null) {
+      title = 'VALIDO';
+      color = Colors.green;
+      subtitle = '${result.serial} | ${result.message}';
+    } else if (status == LiveCameraStatus.noSerial) {
+      title = 'Sin lectura';
+      color = Colors.orange;
+      subtitle = 'No se detecta una serie legible.';
+    } else if (status == LiveCameraStatus.error) {
+      title = 'Error';
+      color = Colors.red;
+      subtitle = 'No se pudo procesar el frame.';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.66),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.8), width: 1.2),
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text(
-              'Imagen capturada',
-              style: TextStyle(fontWeight: FontWeight.w600),
+          Text(
+            title,
+            style: TextStyle(
+              color: color,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
             ),
           ),
-          AspectRatio(
-            aspectRatio: 4 / 3,
-            child: Image.file(
-              imageFile,
-              fit: BoxFit.cover,
-            ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildResultCard() {
-    final result = _viewModel.scanResult;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Resultado OCR',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 12),
-            if (_viewModel.status == ScannerStatus.idle)
-              const Text('Aun no hay una captura procesada.'),
-            if (_viewModel.status == ScannerStatus.loading)
-              const Row(
-                children: [
-                  SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  SizedBox(width: 8),
-                  Text('Reconociendo texto...'),
-                ],
-              ),
-            if (_viewModel.status == ScannerStatus.error)
-              Text(
-                _viewModel.errorMessage ?? 'Ocurrio un error inesperado.',
-                style: const TextStyle(color: Colors.red),
-              ),
-            if (_viewModel.status == ScannerStatus.success && result != null)
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    result.bestSerial == null
-                        ? 'Serie principal: No detectada'
-                        : 'Serie principal: ${result.bestSerial}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Series detectadas: ${result.detectedSerials.isEmpty ? '0' : result.detectedSerials.length}',
-                  ),
-                  const SizedBox(height: 4),
-                  if (result.detectedSerials.isNotEmpty)
-                    Text(result.detectedSerials.join(', ')),
-                ],
-              ),
-          ],
+class _GlassButton extends StatelessWidget {
+  const _GlassButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withOpacity(0.42),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white),
+              const SizedBox(width: 8),
+              Text(label, style: const TextStyle(color: Colors.white)),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _CaptureOverlay extends StatelessWidget {
+  const _CaptureOverlay({required this.frameWidth, required this.frameHeight});
+
+  final double frameWidth;
+  final double frameHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Column(
+        children: [
+          Expanded(child: Container(color: Colors.black45)),
+          Row(
+            children: [
+              Expanded(child: Container(color: Colors.black45)),
+              Container(
+                width: frameWidth,
+                height: frameHeight,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white, width: 2),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              Expanded(child: Container(color: Colors.black45)),
+            ],
+          ),
+          Expanded(child: Container(color: Colors.black45)),
+        ],
       ),
     );
   }

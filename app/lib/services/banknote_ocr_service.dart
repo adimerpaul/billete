@@ -6,13 +6,19 @@ import '../models/banknote_scan_result.dart';
 
 class BanknoteOcrService {
   BanknoteOcrService({TextRecognizer? textRecognizer})
-      : _textRecognizer =
-            textRecognizer ?? TextRecognizer(script: TextRecognitionScript.latin);
+    : _textRecognizer =
+          textRecognizer ?? TextRecognizer(script: TextRecognitionScript.latin);
 
   final TextRecognizer _textRecognizer;
 
   Future<BanknoteScanResult> recognizeSerials(File imageFile) async {
     final inputImage = InputImage.fromFile(imageFile);
+    return recognizeSerialsFromInputImage(inputImage);
+  }
+
+  Future<BanknoteScanResult> recognizeSerialsFromInputImage(
+    InputImage inputImage,
+  ) async {
     final recognizedText = await _textRecognizer.processImage(inputImage);
     final fullText = recognizedText.text;
     final serials = _extractPossibleSerials(fullText);
