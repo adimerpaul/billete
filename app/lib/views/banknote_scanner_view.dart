@@ -190,18 +190,27 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
           builder: (context, constraints) {
             final frameWidth = constraints.maxWidth * 0.86;
             final frameHeight = constraints.maxHeight * 0.22;
+            final previewSize = _cameraController!.value.previewSize;
             return Stack(
               children: [
                 Positioned.fill(
-                  child: ColoredBox(
-                    color: Colors.black,
-                    child: Center(
-                      child: AspectRatio(
-                        aspectRatio: _cameraController!.value.aspectRatio,
-                        child: CameraPreview(_cameraController!),
-                      ),
-                    ),
-                  ),
+                  child: previewSize == null
+                      ? CameraPreview(_cameraController!)
+                      : ClipRect(
+                          child: ColoredBox(
+                            color: Colors.black,
+                            child: SizedBox.expand(
+                              child: FittedBox(
+                                fit: BoxFit.cover,
+                                child: SizedBox(
+                                  width: previewSize.height,
+                                  height: previewSize.width,
+                                  child: CameraPreview(_cameraController!),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
                 Positioned.fill(
                   child: _CaptureOverlay(
@@ -222,33 +231,46 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
     final status = _viewModel.status;
 
     String title = 'Escaneando serie...';
-    Color color = Colors.blue;
+    Color color = const Color(0xFF2E86DE);
+    Color bgColor = Colors.black.withOpacity(0.68);
     String subtitle = 'Apunta la serie dentro del recuadro.';
 
     if (status == LiveCameraStatus.invalid && result != null) {
       title = 'INVALIDO';
-      color = Colors.red;
+      color = const Color(0xFFFF4D4F);
+      bgColor = const Color(0xAA4A1414);
       subtitle = '${result.serial} | ${result.message}';
     } else if (status == LiveCameraStatus.valid && result != null) {
       title = 'VALIDO';
-      color = Colors.green;
+      color = const Color(0xFF2ECC71);
+      bgColor = const Color(0xAA113C2A);
       subtitle = '${result.serial} | ${result.message}';
     } else if (status == LiveCameraStatus.noSerial) {
       title = 'Sin lectura';
-      color = Colors.orange;
+      color = const Color(0xFFF5B041);
+      bgColor = const Color(0xAA4C3B12);
       subtitle = 'No se detecta una serie legible.';
     } else if (status == LiveCameraStatus.error) {
       title = 'Error';
-      color = Colors.red;
+      color = const Color(0xFFFF4D4F);
+      bgColor = const Color(0xAA4A1414);
       subtitle = 'No se pudo procesar el frame.';
     }
 
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.66),
+        color: bgColor,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.8), width: 1.2),
+        border: Border.all(color: color.withOpacity(0.95), width: 1.8),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.28),
+            blurRadius: 14,
+            spreadRadius: 1,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
