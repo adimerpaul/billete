@@ -25,12 +25,22 @@ class BanknoteLiveCameraViewModel extends ChangeNotifier {
 
   bool _isProcessing = false;
   DateTime _lastProcessedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const int _minConsistentDetections = 2;
 
-  Future<void> processFrame(InputImage inputImage) async {
+  String? _candidateSerial;
+  int _candidateHits = 0;
+  String? _lastSeenSerial;
+  String? get lastSeenSerial => _lastSeenSerial;
+
+  Future<bool> processFrame(InputImage inputImage) async {
+    if (_status == LiveCameraStatus.valid || _status == LiveCameraStatus.invalid) {
+      return true;
+    }
+
     final now = DateTime.now();
     if (_isProcessing ||
-        now.difference(_lastProcessedAt).inMilliseconds < 700) {
-      return;
+        now.difference(_lastProcessedAt).inMilliseconds < 550) {
+      return false;
     }
 
     _isProcessing = true;
@@ -47,9 +57,27 @@ class BanknoteLiveCameraViewModel extends ChangeNotifier {
       );
       final serial = ocrResult.bestSerial;
       if (serial == null) {
+        _candidateSerial = null;
+        _candidateHits = 0;
         _status = LiveCameraStatus.noSerial;
         notifyListeners();
-        return;
+        return false;
+      }
+
+      _lastSeenSerial = serial;
+      if (_candidateSerial == serial) {
+        _candidateHits += 1;
+      } else {
+        _candidateSerial = serial;
+        _candidateHits = 1;
+      }
+
+      if (_candidateHits < _minConsistentDetections) {
+        if (_status != LiveCameraStatus.scanning) {
+          _status = LiveCameraStatus.scanning;
+          notifyListeners();
+        }
+        return false;
       }
 
       final validation = _validationService.validate(rawSerial: serial);
@@ -58,9 +86,11 @@ class BanknoteLiveCameraViewModel extends ChangeNotifier {
           ? LiveCameraStatus.valid
           : LiveCameraStatus.invalid;
       notifyListeners();
+      return true;
     } catch (_) {
       _status = LiveCameraStatus.error;
       notifyListeners();
+      return false;
     } finally {
       _isProcessing = false;
     }

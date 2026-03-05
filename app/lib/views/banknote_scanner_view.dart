@@ -20,6 +20,7 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
   CameraController? _cameraController;
   Future<void>? _cameraInitFuture;
   late final BanknoteLiveCameraViewModel _viewModel;
+  bool _hasReturnedResult = false;
 
   @override
   void initState() {
@@ -70,7 +71,10 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
       return;
     }
 
-    await _viewModel.processFrame(inputImage);
+    final isCompleted = await _viewModel.processFrame(inputImage);
+    if (isCompleted) {
+      await _returnWithResult();
+    }
   }
 
   InputImage? _toInputImage(CameraImage image, CameraDescription camera) {
@@ -131,8 +135,25 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
     );
   }
 
-  void _goBack() {
+  Future<void> _returnWithResult() async {
+    if (_hasReturnedResult || !mounted) {
+      return;
+    }
+    _hasReturnedResult = true;
+
+    final controller = _cameraController;
+    if (controller?.value.isStreamingImages ?? false) {
+      await controller?.stopImageStream();
+    }
+
+    if (!mounted) {
+      return;
+    }
     Navigator.of(context).pop<SerialValidationResult?>(_viewModel.result);
+  }
+
+  Future<void> _goBack() async {
+    await _returnWithResult();
   }
 
   @override
@@ -160,7 +181,7 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
                 child: _GlassButton(
                   icon: Icons.arrow_back,
                   label: 'Atras',
-                  onPressed: _goBack,
+                  onPressed: () => _goBack(),
                 ),
               ),
               Positioned(
@@ -233,7 +254,9 @@ class _BanknoteScannerViewState extends State<BanknoteScannerView> {
     String title = 'Escaneando serie...';
     Color color = const Color(0xFF2E86DE);
     Color bgColor = Colors.black.withOpacity(0.68);
-    String subtitle = 'Apunta la serie dentro del recuadro.';
+    String subtitle = _viewModel.lastSeenSerial == null
+        ? 'Apunta la serie dentro del recuadro.'
+        : 'Detectado: ${_viewModel.lastSeenSerial} (confirmando)';
 
     if (status == LiveCameraStatus.invalid && result != null) {
       title = 'INVALIDO';
